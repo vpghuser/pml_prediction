@@ -1,0 +1,150 @@
+---
+title: Practical Machine Learning peer reviewed assignment - exercise predictions
+output:
+  html_document:
+    toc: true
+    theme: united
+---
+
+<!-- 
+Plan: 
+- question
+- investigate data in training set
+- extract features
+- algorithm 
+- estimate parameters 
+- evaluate 
+-->
+
+# Question
+predict the manner in which participants did the exercise (classe column in input data).
+
+# Investigate what data we have at hand
+
+First let's load caret library. We'll need it later.
+
+```{r libraries}
+library("caret") 
+library(doParallel) # will need it for training, otherwise painfully slow
+registerDoParallel(detectCores()) 
+```
+
+Reading file. 
+
+```{r reading file}
+training <- read.csv("pml-training.csv", header = TRUE)
+```
+
+Quick look inside
+```{r peek}
+dim(training)
+```
+Quite a large number of columns, probably can be reduced.
+
+Let's investigate the content. 
+```{r another peek}
+head(training) 
+```
+
+Lots of NAs and missing data. 
+Let's clear this up.
+
+```{r replace NAs}
+na_strings <- c("", "#DIV/0!", "NA")    
+training <- read.csv("pml-training.csv", header = TRUE, na.strings=na_strings) 
+```
+
+We don't want to use X, user_name, raw_timestamp_part_1, raw_timestamp_part_2, 
+cvtd_timestamp, new_window, num_window columns, and columns containing mostly NAs.
+
+```{r remove columns}
+training$classe <- as.factor(training$classe)
+
+# retain only those without NAs
+training <- training[ , colSums(is.na(training)) == 0]
+
+no_use_columns <- c("X", "user_name", "raw_timestamp_part_1", "raw_timestamp_part_2", 
+"cvtd_timestamp", "new_window", "num_window")
+
+training <- training[, !names(training) %in% no_use_columns]
+```
+
+We will take training set and split it to training and validation. 
+
+# extract features
+
+After data cleanup we left with `r length(names(training))-1` potential features.
+
+<!-- After data cleanup we left with `r names(training)` potential features. -->
+
+Let's split original training set to training set and validation set. 
+
+```{r split to training and validation}
+set.seed(42) # makes results reproducible
+original_training <- training
+inTrain <- createDataPartition(y=original_training$classe, p=0.7, list=FALSE)
+training <- original_training[inTrain,]
+validation <- original_training[-inTrain,]
+```
+
+Looking for near-zero variance in variables
+```{r zero var}
+nzv <- nearZeroVar(training, saveMetrics= TRUE)
+nzv
+```
+There's seemingly no near-zero variance variables. 
+
+Let's eliminate highly correlated attributes to reduce model dimensionality.
+
+```{r remove highly correlated}
+# the last one is classe variable we are going to predict, not feature
+correlationMatrix <- cor(training[,1:length(names(training))-1])
+#print(correlationMatrix) 
+highlyCorrelated <- findCorrelation(correlationMatrix, cutoff=0.75)
+print(highlyCorrelated) # indices of highly correlated attributes
+
+training <- training[-c(highlyCorrelated)]
+
+summary(training)
+```
+
+# algorithm
+
+Let's start with Random Forest and see if it provides good results.
+
+```{r train RF}
+train_control <- trainControl(method="cv", number=10, allowParallel=TRUE) 
+
+modelRF <- train(classe ~ ., data=training, trControl=train_control, method="rf")
+
+print(modelRF)
+```
+
+# estimate & evaluate
+
+validation, and confusion matrix
+```{r validate RF}
+validationRF <- predict(modelRF, newdata=validation)
+confusionMatrix(validationRF, validation$classe)
+```
+
+Accuracy : 0.9929
+We can expect lower accuracy on new data since out of sample error tends to be bigger than in sample error. 
+
+```{r importance}
+importance <- varImp(modelRF, scale = FALSE)
+plot(importance, top = 32)
+```
+
+Top 6 features look relatively more important than the rest, probably could have created model with less features. 
+
+# predict on testing data
+
+Let's use our model to predict 
+```{r predicion on test set}
+
+testing <- read.csv("pml-testing.csv", header = TRUE, na.strings=na_strings) 
+
+testPred <- predict(modelRF, testing)
+testPred
+```
